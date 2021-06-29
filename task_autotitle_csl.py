@@ -18,10 +18,15 @@ from bert4keras.snippets import DataGenerator, AutoRegressiveDecoder
 from keras.models import Model
 from rouge import Rouge  # pip install rouge
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+import sys
+import os
+gpu,path_save,path_trn,path_dev,path_tst = sys.argv[1:]
+# gpu,path_save,path_trn,path_dev,path_tst = '0','/search/odin/guobk/data/mordern_poem/t5/topic','/search/odin/guobk/data/mordern_poem/topic2poem.txt','/search/odin/guobk/data/mordern_poem/topic2poem.txt','/search/odin/guobk/data/mordern_poem/topic2poem.txt'
+# os.environ['CUDA_VISIBLE_DEVICES'] = gpu
 
 # 基本参数
-max_c_len = 256
-max_t_len = 32
+max_c_len = 32
+max_t_len = 128
 batch_size = 16
 epochs = 40
 
@@ -31,6 +36,10 @@ checkpoint_path = '/root/kg/bert/mt5/mt5_base/model.ckpt-1000000'
 spm_path = '/root/kg/bert/mt5/sentencepiece_cn.model'
 keep_tokens_path = '/root/kg/bert/mt5/sentencepiece_cn_keep_tokens.json'
 
+config_path = '/search/odin/guobk/data/model/mt5/mt5_base_config.json'
+checkpoint_path = '/search/odin/guobk/data/model/mt5/mt5_base/model.ckpt-1000000'
+spm_path = '/search/odin/guobk/data/model/mt5/sentencepiece_cn.model'
+keep_tokens_path = '/search/odin/guobk/data/model/mt5/sentencepiece_cn_keep_tokens.json'
 
 def load_data(filename):
     D = []
@@ -42,9 +51,9 @@ def load_data(filename):
 
 
 # 加载数据集
-train_data = load_data('/root/csl/train.tsv')
-valid_data = load_data('/root/csl/val.tsv')
-test_data = load_data('/root/csl/test.tsv')
+train_data = load_data(path_trn)
+valid_data = load_data(path_dev)
+test_data = load_data(path_tst)
 
 # 加载分词器
 tokenizer = SpTokenizer(spm_path, token_start=None, token_end='</s>')
@@ -99,6 +108,9 @@ output = CrossEntropy(1)([model.inputs[1], model.outputs[0]])
 
 model = Model(model.inputs, output)
 model.compile(optimizer=Adam(2e-4))
+encoder.save(os.path.join(path_save,'encoder_init.h5'))
+decoder.save(os.path.join(path_save,'decoder_init.h5'))
+model.save(os.path.join(path_save,'model_init.h5'))
 
 
 class AutoTitle(AutoRegressiveDecoder):
@@ -108,7 +120,6 @@ class AutoTitle(AutoRegressiveDecoder):
     def predict(self, inputs, output_ids, states):
         c_encoded = inputs[0]
         return decoder.predict([c_encoded, output_ids])[:, -1]
-
     def generate(self, text, topk=1):
         c_token_ids, _ = tokenizer.encode(text, maxlen=max_c_len)
         c_encoded = encoder.predict(np.array([c_token_ids]))[0]
@@ -117,7 +128,7 @@ class AutoTitle(AutoRegressiveDecoder):
 
 
 # 注：T5有一个很让人不解的设置，它的<bos>标记id是0，即<bos>和<pad>其实都是0
-autotitle = AutoTitle(start_id=0, end_id=tokenizer._token_end_id, maxlen=32)
+autotitle = AutoTitle(start_id=0, end_id=tokenizer._token_end_id, maxlen=max_t_len)
 
 
 class Evaluator(keras.callbacks.Callback):
@@ -127,7 +138,6 @@ class Evaluator(keras.callbacks.Callback):
         self.rouge = Rouge()
         self.smooth = SmoothingFunction().method1
         self.best_bleu = 0.
-
     def on_epoch_end(self, epoch, logs=None):
         metrics = self.evaluate(valid_data)  # 评测模型
         if metrics['bleu'] > self.best_bleu:
@@ -135,7 +145,6 @@ class Evaluator(keras.callbacks.Callback):
             model.save_weights('./best_model.weights')  # 保存模型
         metrics['best_bleu'] = self.best_bleu
         print('valid_data:', metrics)
-
     def evaluate(self, data, topk=1):
         total = 0
         rouge_1, rouge_2, rouge_l, bleu = 0, 0, 0, 0
@@ -169,12 +178,13 @@ if __name__ == '__main__':
 
     evaluator = Evaluator()
     train_generator = data_generator(train_data, batch_size)
-
+    checkpointer = keras.callbacks.ModelCheckpoint(os.path.join(path_save, 'model_{epoch:03d}.h5'),
+                                   verbose=1, save_weights_only=False, period=1)
     model.fit(
         train_generator.forfit(),
         steps_per_epoch=len(train_generator),
         epochs=epochs,
-        callbacks=[evaluator]
+        callbacks=[checkpointer,evaluator]
     )
 
 else:
